@@ -24,6 +24,7 @@ export interface SupportedModel {
 
 export const SUPPORTED_MODELS: SupportedModel[] = [
   { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', provider: 'gemini', description: 'Google SDK' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'gemini', description: 'Google SDK' },
   { id: 'deepseek-ai/deepseek-r1', name: 'DeepSeek R1', provider: 'third-party', description: 'NVIDIA NIM / R1' },
   { id: 'minimaxai/minimax-m2.1', name: 'MiniMax-M2.1', provider: 'third-party', description: 'NVIDIA NIM' },
   { id: 'moonshotai/kimi-k2-thinking', name: 'Kimi-K2-Thinking', provider: 'third-party', description: 'NVIDIA NIM' },
