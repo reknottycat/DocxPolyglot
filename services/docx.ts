@@ -1,58 +1,62 @@
 import JSZip from 'jszip';
-import { translateBatch } from './gemini';
-import { TranslationProgress } from '../types';
+import { translateBatch } from './ai';
+import { TranslationProgress, APIConfig } from '../types';
 
-// Batch size for translation requests
-const BATCH_SIZE = 50;
+const BATCH_SIZE = 40; // Slightly smaller batch for better third-party compatibility
+const FONT_NAME = "Times New Roman";
 
-/**
- * Main function to handle the docx translation process.
- * Returns the translated blob and total token usage.
- */
 export const translateDocx = async (
   file: File,
   targetLanguage: string,
+  apiConfig: APIConfig,
   onProgress: (progress: TranslationProgress) => void
 ): Promise<{ blob: Blob, totalTokens: number }> => {
   const zip = new JSZip();
   const loadedZip = await zip.loadAsync(file);
 
-  // The main content of a .docx file usually lives in word/document.xml
   const documentXmlFile = loadedZip.file("word/document.xml");
-  if (!documentXmlFile) {
-    throw new Error("Invalid .docx file: word/document.xml not found.");
-  }
+  if (!documentXmlFile) throw new Error("Invalid .docx");
 
   const contentXml = await documentXmlFile.async("string");
-  
-  // Parse XML
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(contentXml, "application/xml");
-  const errorNode = xmlDoc.querySelector("parsererror");
-  if (errorNode) {
-    throw new Error("Error parsing XML content of the document.");
-  }
+  const wNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
-  // Find all text nodes (<w:t>)
+  // Force Times New Roman
+  const runs = Array.from(xmlDoc.getElementsByTagName("w:r"));
+  runs.forEach(run => {
+    let rPr = run.getElementsByTagName("w:rPr")[0];
+    if (!rPr) {
+      rPr = xmlDoc.createElementNS(wNS, "w:rPr");
+      run.insertBefore(rPr, run.firstChild);
+    }
+    let rFonts = rPr.getElementsByTagName("w:rFonts")[0];
+    if (!rFonts) {
+      rFonts = xmlDoc.createElementNS(wNS, "w:rFonts");
+      rPr.appendChild(rFonts);
+    }
+    rFonts.setAttribute("w:ascii", FONT_NAME);
+    rFonts.setAttribute("w:hAnsi", FONT_NAME);
+    rFonts.setAttribute("w:eastAsia", FONT_NAME);
+    rFonts.setAttribute("w:cs", FONT_NAME);
+  });
+
   const textNodes = Array.from(xmlDoc.getElementsByTagName("w:t"));
-  
-  // Filter nodes that actually have content to translate
   const activeNodes: Element[] = [];
   const originalTexts: string[] = [];
 
-  for (const node of textNodes) {
+  textNodes.forEach(node => {
     const text = node.textContent;
     if (text && text.trim().length > 0) {
       activeNodes.push(node);
       originalTexts.push(text);
     }
-  }
+  });
 
   const totalSegments = activeNodes.length;
   let translatedCount = 0;
   let totalTokens = 0;
 
-  // Process in batches
   for (let i = 0; i < totalSegments; i += BATCH_SIZE) {
     const batchNodes = activeNodes.slice(i, i + BATCH_SIZE);
     const batchTexts = originalTexts.slice(i, i + BATCH_SIZE);
@@ -60,44 +64,30 @@ export const translateDocx = async (
     onProgress({
       totalSegments,
       translatedSegments: translatedCount,
-      currentAction: `Translating segments ${i + 1} to ${Math.min(i + BATCH_SIZE, totalSegments)}...`
+      currentAction: `Translating (${i + 1}/${totalSegments})...`
     });
 
-    const { items: translatedBatch, tokens } = await translateBatch(batchTexts, targetLanguage);
+    const { items, tokens } = await translateBatch(batchTexts, targetLanguage, apiConfig);
     totalTokens += tokens;
 
-    // Update the XML DOM with translated text
     batchNodes.forEach((node, index) => {
-      // Use textContent to safely escape XML entities
-      if (translatedBatch[index] !== undefined) {
-         node.textContent = translatedBatch[index];
-      }
+      if (items[index] !== undefined) node.textContent = items[index];
     });
 
     translatedCount += batchNodes.length;
-    
-    // Small delay to be nice to the event loop
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(r => setTimeout(r, 100));
   }
 
-  onProgress({
-    totalSegments,
-    translatedSegments: totalSegments,
-    currentAction: "Rebuilding document structure..."
-  });
+  onProgress({ totalSegments, translatedSegments: totalSegments, currentAction: "Finalizing..." });
 
-  // Serialize back to XML string
   const serializer = new XMLSerializer();
-  const newContentXml = serializer.serializeToString(xmlDoc);
+  loadedZip.file("word/document.xml", serializer.serializeToString(xmlDoc));
 
-  // Update the file in the zip
-  loadedZip.file("word/document.xml", newContentXml);
-
-  // Generate new blob
-  const outputBlob = await loadedZip.generateAsync({
-    type: "blob",
-    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-  });
-
-  return { blob: outputBlob, totalTokens };
+  return {
+    blob: await loadedZip.generateAsync({
+      type: "blob",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    }),
+    totalTokens
+  };
 };
